@@ -9,8 +9,11 @@ import tensorflow as tf
 from sklearn.metrics import accuracy_score
 from streamlit_drawable_canvas import st_canvas
 import io
+from keras.callbacks import History
 import main
 import model
+import plot
+from matplotlib import pyplot as plt
 
 # Data after preprocessing
 X_train, y_train, X_test, y_test = main.X_train, main.y_train, main.X_test, main.y_test
@@ -133,6 +136,9 @@ def Select_Algo(algo):
         x_test = X_test
         train_loss_list = [0]
         train_dataset = []
+        models = keras.models.Sequential()
+        loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+        opt = keras.optimizers.Adam()
 
         col = st.columns(3)
         with col[0]:
@@ -149,27 +155,27 @@ def Select_Algo(algo):
             function_opt = st.selectbox('Select function optimation', ('Adam', 'RMSprop', 'SGD'))
         with col[0]:
             loss_function = st.selectbox('Select loss function',
-                                         ('Categorial Crossentropy', 'Sparse categorical Crossentropy'))
+                                         ('Categorial', 'Sparse categorical'))
         with col[1]:
-            batch_size = st.number_input('Select batch size', step=1, value=1)
+            batch_size = st.number_input('Select batch size', step=1, value=128)
         with col[2]:
             num_epochs = st.number_input('Select number epochs', step=1, value=3)
 
         if function_opt == 'Adam':
-            opt = keras.optimizers.Adam(learning_rate=0.1)
+            opt = keras.optimizers.Adam()
         elif function_opt == 'RMSprop':
-            opt = keras.optimizers.RMSprop(learning_rate=0.1)
+            opt = keras.optimizers.RMSprop()
         elif function_opt == 'SGD':
-            opt = keras.optimizers.SGD(learning_rate=0.1)
+            opt = keras.optimizers.SGD()
 
-        if loss_function == 'Categorial Crossentropy':
-            loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-            train_metrics = tf.keras.metrics.Accuracy()
-            val_metric = tf.keras.metrics.Accuracy()
-        elif loss_function == 'Sparse categorical Crossentropy':
-            loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-            train_metrics = tf.keras.metrics.Accuracy()
-            val_metric = tf.keras.metrics.Accuracy()
+        if loss_function == 'Categorial':
+            loss_fn = tf.keras.losses.CategoricalCrossentropy()
+            train_metrics = tf.keras.metrics.CategoricalAccuracy()
+            val_metric = tf.keras.metrics.CategoricalAccuracy()
+        elif loss_function == 'Sparse categorical':
+            loss_fn = tf.keras.losses.SparseCategoricalCrossentropy()
+            train_metrics = tf.keras.metrics.SparseCategoricalAccuracy()
+            val_metric = tf.keras.metrics.SparseCategoricalAccuracy()
 
         if batch_size:
             batch_size = int(batch_size)
@@ -181,42 +187,19 @@ def Select_Algo(algo):
             val_dataset = val_dataset.shuffle(buffer_size=1024).batch(batch_size)
             train_steps_per_epoch = len(x_train) // batch_size
 
-        models = keras.models.Sequential()
-
         for i in range(layer_num):
             if i == 0:
                 models.add(tf.keras.layers.Dense(784, input_dim=784))
-            elif i < layer_num-1:
-                models.add(tf.keras.layers.Dense(512, activation='relu'))
+            elif i < layer_num - 1:
+                models.add(tf.keras.layers.Dense(node_in_layer, activation=dense_activation))
             else:
-                models.add(tf.keras.layers.Dense(10, activation='softmax', name='predictions'))
+                models.add(tf.keras.layers.Dense(node_output, activation='softmax', name='predictions'))
 
-        @tf.function
-        def train_step(x_batch, y):
-            """
-            Tensorflow function to compute gradient, loss and metric defined globally based on given data and model.
-            """
-            with tf.GradientTape() as tape:
-                logits = models(x_batch, training=True)
-                loss_values = loss_fn(y, logits)
-            grads = tape.gradient(loss_values, models.trainable_weights)
-            opt.apply_gradients(zip(grads, models.trainable_weights))
-            train_metrics.update_state(y, logits)
-            return loss_values
 
-        @tf.function
-        def test_step(x_batch, y):
-            """
-            Tensorflow function to compute predicted loss and metric using sent data from the trained model.
-            """
-            val_logits = models(x_batch, training=False)
-            val_metric.update_state(y, val_logits)
-            return loss_fn(y, val_logits)
-
-        coli = st.columns(2)
+        coli = st.columns(3)
         with coli[0]:
             btnTrain = st.button("Train")
-        with coli[1]:
+        with coli[2]:
             btnShowSummary = st.button("Summary Model")
 
         if btnShowSummary:
@@ -224,54 +207,110 @@ def Select_Algo(algo):
             st.write(strSum)
 
         if btnTrain:
-            # models.fit(x_train, y_train_cate)
-            st.write("Starting training with {} epochs...".format(num_epochs))
-            for epoch in range(num_epochs):
-                print("\nStart of epoch %d" % (epoch,))
-                st.write("Epoch {}".format(epoch + 1))
-                start_time = time.time()
-                progress_bar = st.progress(0.0)
-                percent_complete = 0
-                train_loss_list = []
-                epoch_time = 0
-                # Creating empty placeholder to update each step result in epoch.
-                st_t = st.empty()
+            models.compile(loss=loss_fn, optimizer=opt, metrics=[train_metrics])
+            history = History()
+            models.fit(x=x_train, y=y_train_cate, validation_data=(x_test, y_test_cate), callbacks=[history],
+                       epochs=num_epochs)
+            hist_losstrain = history.history['loss']
+            hist_losstest = history.history['val_loss']
+            hist_acctrain = history.history['categorical_accuracy']
+            hist_acctest = history.history['val_categorical_accuracy']
 
-                # Iterate over the batches of the dataset.
-                for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
-                    start_step = time.time()
-                    loss_value = train_step(x_batch_train, y_batch_train)
-                    end_step = time.time()
-                    epoch_time += (end_step - start_step)
-                    train_loss_list.append(float(loss_value))
+            coltrain = st.columns(2)
+            with coltrain[0]:
+                WeightData = st.selectbox('Show weights', options=('None', 'Show weight'))
+            with coltrain[1]:
+                PlotData = st.sidebar.selectbox(label='Plot', options=('Loss', 'Accuracy'))
 
-                    # Log every 200 batches.
-                    if step % 200 == 0:
-                        print("Training loss (for one batch) at step %d: %.4f" % (step, float(loss_value)))
-                        print("Seen so far: %d samples" % ((step + 1) * batch_size))
-                        step_acc = float(train_metrics.result())
-                        percent_complete = (step / train_steps_per_epoch)
-                        progress_bar.progress(percent_complete)
-                        st_t.write("Duration : {0:.2f}s, Training acc. : {1:.4f}".format(epoch_time, float(step_acc)))
+            xc = range(num_epochs)
+            # st.write(history.history['categorical_crossentropy'])
+            if PlotData == 'Loss':
+                st.snow()
+                plot.plot(x=hist_losstrain, y=hist_losstest,
+                          name_x='train_loss', name_y='test_loss', title='Plot Loss')
+            elif PlotData == 'Accuracy':
+                st.snow()
+                plot.plot(x=hist_acctrain, y=hist_acctest,
+                          name_x='train_accuracy', name_y='test_accuracy', title='Plot Accuracy')
+            # st.write(history.his)
+            # st.write(models.metrics())
 
-                progress_bar.progress(1.0)
+
+
+
+
+
+
+            # @tf.function
+            # def train_step(x_batch, y):
+            #     """
+            #     Tensorflow function to compute gradient, loss and metric defined globally based on given data and model.
+            #     """
+            #     with tf.GradientTape() as tape:
+            #         logits = models(x_batch, training=True)
+            #         loss_values = loss_fn(y, logits)
+            #     grads = tape.gradient(loss_values, models.trainable_weights)
+            #     opt.apply_gradients(zip(grads, models.trainable_weights))
+            #     train_metrics.update_state(y, logits)
+            #     return loss_values
+
+            # @tf.function
+            # def test_step(x_batch, y):
+            #     """
+            #     Tensorflow function to compute predicted loss and metric using sent data from the trained model.
+            #     """
+            #     val_logits = models(x_batch, training=False)
+            #     val_metric.update_state(y, val_logits)
+            #     return loss_fn(y, val_logits)
+
+
+            # st.write("Starting training with {} epochs...".format(num_epochs))
+            # for epoch in range(num_epochs):
+            #     print("\nStart of epoch %d" % (epoch,))
+            #     st.write("Epoch {}".format(epoch + 1))
+            #     start_time = time.time()
+            #     progress_bar = st.progress(0.0)
+            #     percent_complete = 0
+            #     train_loss_list = []
+            #     epoch_time = 0
+            #     # Creating empty placeholder to update each step result in epoch.
+            #     st_t = st.empty()
+
+            # Iterate over the batches of the dataset.
+            # for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
+            #     start_step = time.time()
+            #     loss_value = train_step(x_batch_train, y_batch_train)
+            #     end_step = time.time()
+            #     epoch_time += (end_step - start_step)
+            #     train_loss_list.append(float(loss_value))
+            #
+            #     # Log every 200 batches.
+            #     if step % 200 == 0:
+            #         print("Training loss (for one batch) at step %d: %.4f" % (step, float(loss_value)))
+            #         print("Seen so far: %d samples" % ((step + 1) * batch_size))
+            #         step_acc = float(train_metrics.result())
+            #         percent_complete = (step / train_steps_per_epoch)
+            #         progress_bar.progress(percent_complete)
+            #         st_t.write("Duration : {0:.2f}s, Training acc. : {1:.4f}".format(epoch_time, float(step_acc)))
+            #
+            # progress_bar.progress(1.0)
         # Display metrics at the end of each epoch.
-        train_acc = train_metrics.result()
-        print("Training acc over epoch: %.4f" % (float(train_acc),))  # Reset training metrics at the end of each epoch
-        train_metrics.reset_states()  # Find epoch training loss.
-        print(train_loss_list)
-        train_loss = round((sum(train_loss_list) / len(train_loss_list)), 5)
-        val_loss_list = []
+        # train_acc = train_metrics.result()
+        # print("Training acc over epoch: %.4f" % (float(train_acc),))  # Reset training metrics at the end of each epoch
+        # train_metrics.reset_states()  # Find epoch training loss.
+        # print(train_loss_list)
+        # train_loss = round((sum(train_loss_list) / len(train_loss_list)), 5)
+        # val_loss_list = []
 
         # Run a validation loop at the end of each epoch.
-        for x_batch_val, y_batch_val in val_dataset:
-            val_loss_list.append(float(test_step(x_batch_val, y_batch_val)))  # Find epoch validation loss.
-        val_loss = round((sum(val_loss_list) / len(val_loss_list)), 5)
-        val_acc = val_metric.result()
-        val_metric.reset_states()
-        print("Validation acc: %.4f" % (float(val_acc),))
-        print("Time taken: %.2fs" % (time.time() - start_time))
-        st.write(
-            "Duration : {0:.2f}s, Training acc. : {1:.4f}, Validation acc.:{2:.4f}".format((time.time() - start_time),
-                                                                                           float(train_acc),
-                                                                                           float(val_acc)))
+        # for x_batch_val, y_batch_val in val_dataset:
+        #     val_loss_list.append(float(test_step(x_batch_val, y_batch_val)))  # Find epoch validation loss.
+        # val_loss = round((sum(val_loss_list) / len(val_loss_list)), 5)
+        # val_acc = val_metric.result()
+        # val_metric.reset_states()
+        # print("Validation acc: %.4f" % (float(val_acc),))
+        # print("Time taken: %.2fs" % (time.time() - start_time))
+        # st.write(
+        #     "Duration : {0:.2f}s, Training acc. : {1:.4f}, Validation acc.:{2:.4f}".format((time.time() - start_time),
+        #                                                                                    float(train_acc),
+        #                                                                                    float(val_acc)))
